@@ -9,12 +9,13 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-// MySQL Connection
+// MySQL Connection - Updated for Railway
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'goabroad_db'
+    host: process.env.MYSQL_HOST || 'localhost',
+    user: process.env.MYSQL_USER || 'root',
+    password: process.env.MYSQL_PASSWORD || '',
+    database: process.env.MYSQL_DATABASE || 'goabroad_db',
+    port: process.env.MYSQL_PORT || 3306
 })
 
 // Connect to MySQL
@@ -48,14 +49,14 @@ db.connect((err) => {
                     console.error('Error checking admin:', err)
                 } else if (results.length === 0) {
                     // Create default admin with hashed password
-                    const hashedPassword = await bcrypt.hash('admin123', 10)
+                    const hashedPassword = await bcrypt.hash('XMA!!', 10)
                     db.query('INSERT INTO admins (username, password, email) VALUES (?, ?, ?)', 
                         ['admin', hashedPassword, 'admin@goabroad.com'], 
                         (err) => {
                             if (err) {
                                 console.error('Error creating default admin:', err)
                             } else {
-                                console.log('✅ Default admin created (username: admin, password: admin123)')
+                                console.log('✅ Default admin created (username: admin, password: XMA!!)')
                             }
                         })
                 } else {
@@ -121,6 +122,7 @@ db.connect((err) => {
             country VARCHAR(255) NOT NULL,
             degree VARCHAR(100) NOT NULL,
             description TEXT NOT NULL,
+            full_details TEXT,
             eligibility TEXT,
             benefits TEXT,
             deadline DATE,
@@ -272,7 +274,6 @@ app.post('/api/admin/login', async (req, res) => {
     }
     
     try {
-        // Get admin with password
         const query = 'SELECT id, username, email, password FROM admins WHERE username = ?'
         
         db.query(query, [username], async (err, results) => {
@@ -284,8 +285,6 @@ app.post('/api/admin/login', async (req, res) => {
                 })
             }
             
-            console.log('Query results length:', results.length)
-            
             if (results.length === 0) {
                 return res.status(401).json({ 
                     success: false, 
@@ -295,10 +294,6 @@ app.post('/api/admin/login', async (req, res) => {
             
             const admin = results[0]
             
-            console.log('Stored password hash length:', admin.password.length)
-            console.log('Stored password starts with:', admin.password.substring(0, 10))
-            
-            // Compare password with bcryptjs
             let passwordMatch = false
             try {
                 passwordMatch = await bcrypt.compare(password, admin.password)
@@ -318,7 +313,6 @@ app.post('/api/admin/login', async (req, res) => {
                 })
             }
             
-            // Generate simple token
             const token = Buffer.from(`${username}:${Date.now()}`).toString('base64')
             
             console.log('Login successful for:', username)
@@ -343,15 +337,14 @@ app.post('/api/admin/login', async (req, res) => {
     }
 })
 
-// POST /api/admin/reset - Reset admin password (useful for troubleshooting)
+// POST /api/admin/reset - Reset admin password
 app.post('/api/admin/reset', async (req, res) => {
     const db = req.db
-    const { username = 'admin', newPassword = 'admin123' } = req.body
+    const { username = 'admin', newPassword = 'XMA!!' } = req.body
     
     try {
         const hashedPassword = await bcrypt.hash(newPassword, 10)
         
-        // Update or insert admin
         db.query('DELETE FROM admins WHERE username = ?', [username], async (err) => {
             if (err) {
                 return res.status(500).json({ success: false, message: 'Error deleting old admin' })
@@ -375,165 +368,30 @@ app.post('/api/admin/reset', async (req, res) => {
     }
 })
 
-// POST /api/admin/fix-password - DIRECT password fix (Use this if login fails)
-app.post('/api/admin/fix-password', async (req, res) => {
-    const db = req.db
-    const { username = 'admin', newPassword = 'XMA!!' } = req.body
-    
-    console.log(`Fixing password for user: ${username}`);
-    console.log(`New password: ${newPassword}`);
-    
-    try {
-        const hashedPassword = await bcrypt.hash(newPassword, 10)
-        console.log('Generated hash:', hashedPassword.substring(0, 30) + '...');
-        
-        // Delete existing admin
-        db.query('DELETE FROM admins WHERE username = ?', [username], (err) => {
-            if (err) {
-                console.error('Delete error:', err);
-                return res.status(500).json({ success: false, message: 'Error deleting admin' });
-            }
-            
-            // Insert new admin with proper hash
-            db.query('INSERT INTO admins (username, password, email) VALUES (?, ?, ?)',
-                [username, hashedPassword, `${username}@goabroad.com`],
-                (err) => {
-                    if (err) {
-                        console.error('Insert error:', err);
-                        return res.status(500).json({ success: false, message: 'Error creating admin' });
-                    }
-                    
-                    // Verify the password works
-                    bcrypt.compare(newPassword, hashedPassword, (err, isValid) => {
-                        if (isValid) {
-                            console.log('✅ Password verification successful');
-                            res.json({ 
-                                success: true, 
-                                message: `Password fixed successfully!`,
-                                credentials: {
-                                    username: username,
-                                    password: newPassword
-                                },
-                                verification: 'Password hash is valid'
-                            });
-                        } else {
-                            console.log('❌ Password verification failed');
-                            res.json({ 
-                                success: true, 
-                                message: `Admin created but verification failed. Please test login.`,
-                                credentials: {
-                                    username: username,
-                                    password: newPassword
-                                }
-                            });
-                        }
-                    });
-                }
-            );
-        });
-    } catch (error) {
-        console.error('Fix password error:', error);
-        res.status(500).json({ success: false, message: 'Error fixing password' });
-    }
-});
+// Health check endpoint for Railway
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        database: db.state === 'authenticated' ? 'connected' : 'disconnected'
+    })
+})
 
-// GET /api/admin/check-db - Check database status (Debug)
+// GET /api/admin/check-db - Check database status
 app.get('/api/admin/check-db', async (req, res) => {
     const db = req.db;
     
-    db.query('SELECT id, username, LENGTH(password) as pass_len, LEFT(password, 15) as pass_start, email FROM admins', (err, results) => {
+    db.query('SELECT id, username, email FROM admins', (err, results) => {
         if (err) {
             return res.status(500).json({ success: false, error: err.message });
         }
         
-        const adminInfo = results.map(admin => ({
-            id: admin.id,
-            username: admin.username,
-            password_length: admin.pass_len,
-            password_starts_with: admin.pass_start,
-            is_valid_hash: admin.pass_len === 60 && (admin.pass_start.startsWith('$2a$') || admin.pass_start.startsWith('$2b$')),
-            email: admin.email
-        }));
-        
         res.json({
             success: true,
-            admins: adminInfo,
+            admins: results,
             total_admins: results.length
         });
     });
-});
-
-// POST /api/admin/change-password - Change admin password (Protected)
-app.post('/api/admin/change-password', checkToken, async (req, res) => {
-    const { currentPassword, newPassword } = req.body
-    const db = req.db
-    
-    if (!currentPassword || !newPassword) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Current password and new password are required' 
-        })
-    }
-    
-    if (newPassword.length < 4) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'New password must be at least 4 characters long' 
-        })
-    }
-    
-    try {
-        // Get admin (assuming single admin for now)
-        db.query('SELECT * FROM admins WHERE username = ?', ['admin'], async (err, results) => {
-            if (err || results.length === 0) {
-                return res.status(404).json({ 
-                    success: false, 
-                    message: 'Admin not found' 
-                })
-            }
-            
-            const admin = results[0]
-            
-            // Verify current password
-            const isValid = await bcrypt.compare(currentPassword, admin.password)
-            
-            if (!isValid) {
-                return res.status(401).json({ 
-                    success: false, 
-                    message: 'Current password is incorrect' 
-                })
-            }
-            
-            // Hash new password
-            const hashedPassword = await bcrypt.hash(newPassword, 10)
-            
-            // Update password
-            db.query(
-                'UPDATE admins SET password = ? WHERE username = ?',
-                [hashedPassword, 'admin'],
-                (err) => {
-                    if (err) {
-                        console.error('Update error:', err)
-                        return res.status(500).json({ 
-                            success: false, 
-                            message: 'Failed to update password' 
-                        })
-                    }
-                    
-                    res.json({ 
-                        success: true, 
-                        message: 'Password changed successfully!' 
-                    })
-                }
-            )
-        })
-    } catch (error) {
-        console.error('Password change error:', error)
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error' 
-        })
-    }
 })
 
 // GET /api/admin/verify - Verify token
@@ -565,7 +423,6 @@ app.post('/api/subscribe', (req, res) => {
         })
     }
     
-    // Check if email exists
     db.query('SELECT * FROM subscribers WHERE email = ?', [email], (err, results) => {
         if (err) {
             console.error('Database error:', err)
@@ -582,7 +439,6 @@ app.post('/api/subscribe', (req, res) => {
             })
         }
         
-        // Insert new subscriber
         db.query('INSERT INTO subscribers (email) VALUES (?)', [email], (err) => {
             if (err) {
                 console.error('Insert error:', err)
@@ -638,7 +494,6 @@ app.post('/api/contact', (req, res) => {
     const { fullName, email, phone, subject, message } = req.body
     const db = req.db
     
-    // Validate inputs
     if (!fullName || !email || !subject || !message) {
         return res.status(400).json({ 
             success: false, 
@@ -646,7 +501,6 @@ app.post('/api/contact', (req, res) => {
         })
     }
     
-    // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
     if (!emailRegex.test(email)) {
         return res.status(400).json({ 
@@ -655,7 +509,6 @@ app.post('/api/contact', (req, res) => {
         })
     }
     
-    // Insert contact message
     const query = `
         INSERT INTO contacts (full_name, email, phone, subject, message) 
         VALUES (?, ?, ?, ?, ?)
@@ -853,7 +706,7 @@ app.delete('/api/scholarship/inquiry/:id', checkToken, (req, res) => {
 
 // ==================== SCHOLARSHIPS MANAGEMENT ROUTES ====================
 
-// GET /api/scholarships - Get all scholarships (Public - for website)
+// GET /api/scholarships - Get all scholarships (Public)
 app.get('/api/scholarships', (req, res) => {
     const db = req.db
     const { featured, status } = req.query
@@ -887,7 +740,7 @@ app.get('/api/scholarships', (req, res) => {
     })
 })
 
-// GET /api/scholarships/:id - Get single scholarship by ID (Public)
+// GET /api/scholarships/:id - Get single scholarship by ID
 app.get('/api/scholarships/:id', (req, res) => {
     const { id } = req.params
     const db = req.db
@@ -909,12 +762,11 @@ app.get('/api/scholarships/:id', (req, res) => {
 // POST /api/admin/scholarships - Create new scholarship (Protected)
 app.post('/api/admin/scholarships', checkToken, (req, res) => {
     const { 
-        title, country, degree, description, eligibility, benefits, 
+        title, country, degree, description, full_details, eligibility, benefits, 
         deadline, link, image_url, status, featured 
     } = req.body
     const db = req.db
     
-    // Validation
     if (!title || !country || !degree || !description) {
         return res.status(400).json({ 
             success: false, 
@@ -924,13 +776,13 @@ app.post('/api/admin/scholarships', checkToken, (req, res) => {
     
     const query = `
         INSERT INTO scholarships 
-        (title, country, degree, description, eligibility, benefits, deadline, link, image_url, status, featured) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (title, country, degree, description, full_details, eligibility, benefits, deadline, link, image_url, status, featured) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     
     db.query(
         query,
-        [title, country, degree, description, eligibility || null, benefits || null, deadline || null, link || null, image_url || null, status || 'active', featured || false],
+        [title, country, degree, description, full_details || null, eligibility || null, benefits || null, deadline || null, link || null, image_url || null, status || 'active', featured || false],
         (err, result) => {
             if (err) {
                 console.error('Insert error:', err)
@@ -953,12 +805,11 @@ app.post('/api/admin/scholarships', checkToken, (req, res) => {
 app.put('/api/admin/scholarships/:id', checkToken, (req, res) => {
     const { id } = req.params
     const { 
-        title, country, degree, description, eligibility, benefits, 
+        title, country, degree, description, full_details, eligibility, benefits, 
         deadline, link, image_url, status, featured 
     } = req.body
     const db = req.db
     
-    // Validation
     if (!title || !country || !degree || !description) {
         return res.status(400).json({ 
             success: false, 
@@ -969,14 +820,14 @@ app.put('/api/admin/scholarships/:id', checkToken, (req, res) => {
     const query = `
         UPDATE scholarships 
         SET title = ?, country = ?, degree = ?, description = ?, 
-            eligibility = ?, benefits = ?, deadline = ?, link = ?, 
-            image_url = ?, status = ?, featured = ?
+            full_details = ?, eligibility = ?, benefits = ?, deadline = ?, 
+            link = ?, image_url = ?, status = ?, featured = ?
         WHERE id = ?
     `
     
     db.query(
         query,
-        [title, country, degree, description, eligibility || null, benefits || null, deadline || null, link || null, image_url || null, status || 'active', featured || false, id],
+        [title, country, degree, description, full_details || null, eligibility || null, benefits || null, deadline || null, link || null, image_url || null, status || 'active', featured || false, id],
         (err, result) => {
             if (err) {
                 console.error('Update error:', err)
@@ -1029,7 +880,7 @@ app.delete('/api/admin/scholarships/:id', checkToken, (req, res) => {
     })
 })
 
-// PATCH /api/admin/scholarships/:id/feature - Toggle featured status (Protected)
+// PATCH /api/admin/scholarships/:id/feature - Toggle featured status
 app.patch('/api/admin/scholarships/:id/feature', checkToken, (req, res) => {
     const { id } = req.params
     const { featured } = req.body
@@ -1062,7 +913,7 @@ app.patch('/api/admin/scholarships/:id/feature', checkToken, (req, res) => {
     )
 })
 
-// PATCH /api/admin/scholarships/:id/status - Update scholarship status (Protected)
+// PATCH /api/admin/scholarships/:id/status - Update scholarship status
 app.patch('/api/admin/scholarships/:id/status', checkToken, (req, res) => {
     const { id } = req.params
     const { status } = req.body
@@ -1104,7 +955,6 @@ app.patch('/api/admin/scholarships/:id/status', checkToken, (req, res) => {
 
 // ==================== SCHOLARSHIP STATISTICS ====================
 
-// GET /api/scholarship/stats - Get scholarship statistics (Public)
 app.get('/api/scholarship/stats', (req, res) => {
     const db = req.db
     
@@ -1126,7 +976,6 @@ app.get('/api/scholarship/stats', (req, res) => {
     })
 })
 
-// GET /api/scholarship/popular - Get most popular scholarships (Public)
 app.get('/api/scholarship/popular', (req, res) => {
     const db = req.db
     
@@ -1144,7 +993,6 @@ app.get('/api/scholarship/popular', (req, res) => {
     })
 })
 
-// GET /api/scholarship/admin/stats - Get admin dashboard stats (Protected)
 app.get('/api/scholarship/admin/stats', checkToken, (req, res) => {
     const db = req.db
     
@@ -1172,58 +1020,15 @@ app.get('/api/scholarship/admin/stats', checkToken, (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'GoAbroad Admissions API',
-        version: '4.0.0',
+        version: '5.0.0',
         status: 'running',
-        endpoints: {
-            public: {
-                home: 'GET /',
-                subscribe: 'POST /api/subscribe',
-                contact: 'POST /api/contact',
-                scholarshipInquiry: 'POST /api/scholarship/inquiry',
-                scholarshipStats: 'GET /api/scholarship/stats',
-                popularScholarships: 'GET /api/scholarship/popular',
-                getAllScholarships: 'GET /api/scholarships',
-                getScholarshipById: 'GET /api/scholarships/:id'
-            },
-            protected: {
-                login: 'POST /api/admin/login',
-                resetAdmin: 'POST /api/admin/reset',
-                fixPassword: 'POST /api/admin/fix-password',
-                checkDatabase: 'GET /api/admin/check-db',
-                changePassword: 'POST /api/admin/change-password',
-                verify: 'GET /api/admin/verify',
-                subscribers: 'GET /api/subscribers',
-                deleteSubscriber: 'DELETE /api/subscriber/:id',
-                contacts: 'GET /api/contacts',
-                deleteContact: 'DELETE /api/contact/:id',
-                inquiries: 'GET /api/scholarship/inquiries',
-                getInquiry: 'GET /api/scholarship/inquiry/:id',
-                updateStatus: 'PUT /api/scholarship/inquiry/:id/status',
-                deleteInquiry: 'DELETE /api/scholarship/inquiry/:id',
-                createScholarship: 'POST /api/admin/scholarships',
-                updateScholarship: 'PUT /api/admin/scholarships/:id',
-                deleteScholarship: 'DELETE /api/admin/scholarships/:id',
-                toggleFeatured: 'PATCH /api/admin/scholarships/:id/feature',
-                updateScholarshipStatus: 'PATCH /api/admin/scholarships/:id/status',
-                adminStats: 'GET /api/scholarship/admin/stats'
-            }
-        },
-        admin_credentials: {
-            username: 'admin',
-            password: 'admin123'
-        },
-        troubleshooting: {
-            fix_password: 'POST /api/admin/fix-password',
-            reset_admin: 'POST /api/admin/reset',
-            check_db: 'GET /api/admin/check-db',
-            change_password: 'POST /api/admin/change-password (requires auth)'
-        }
+        environment: process.env.NODE_ENV || 'development',
+        database: db.state === 'authenticated' ? 'connected' : 'disconnected'
     })
 })
 
 // ==================== ERROR HANDLING ====================
 
-// 404 handler
 app.use((req, res) => {
     res.status(404).json({ 
         success: false, 
@@ -1231,7 +1036,6 @@ app.use((req, res) => {
     })
 })
 
-// Error handler
 app.use((err, req, res, next) => {
     console.error('Server error:', err)
     res.status(500).json({ 
@@ -1242,48 +1046,22 @@ app.use((err, req, res, next) => {
 
 // ==================== START SERVER ====================
 
-const PORT = 3000
+const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
     console.log('\n' + '='.repeat(50))
     console.log('🚀 GoAbroad Admissions API Server')
     console.log('='.repeat(50))
-    console.log(`\n✅ Server running on http://localhost:${PORT}`)
+    console.log(`\n✅ Server running on port ${PORT}`)
+    console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`)
     console.log('\n🔐 Admin Login Credentials:')
     console.log('   Username: admin')
-    console.log('   Password: admin123')
-    console.log('\n⚠️  Admin Management:')
-    console.log('   🔄 Reset to default: POST /api/admin/reset')
-    console.log('   🔧 Fix password: POST /api/admin/fix-password')
-    console.log('   🔑 Change password: POST /api/admin/change-password (requires auth)')
-    console.log('   📊 Check database: GET /api/admin/check-db')
+    console.log('   Password: XMA!!')
     console.log('\n📋 Public Endpoints:')
+    console.log('   GET    /health')
+    console.log('   GET    /api/scholarships')
     console.log('   POST   /api/subscribe')
     console.log('   POST   /api/contact')
     console.log('   POST   /api/scholarship/inquiry')
-    console.log('   GET    /api/scholarship/stats')
-    console.log('   GET    /api/scholarship/popular')
-    console.log('   GET    /api/scholarships')
-    console.log('   GET    /api/scholarships/:id')
-    console.log('\n🔒 Protected Endpoints (Require Token):')
-    console.log('   POST   /api/admin/login')
-    console.log('   POST   /api/admin/reset')
-    console.log('   POST   /api/admin/fix-password (no auth required)')
-    console.log('   GET    /api/admin/check-db (no auth required)')
-    console.log('   POST   /api/admin/change-password')
-    console.log('   GET    /api/admin/verify')
-    console.log('   GET    /api/subscribers')
-    console.log('   DELETE /api/subscriber/:id')
-    console.log('   GET    /api/contacts')
-    console.log('   DELETE /api/contact/:id')
-    console.log('   GET    /api/scholarship/inquiries')
-    console.log('   PUT    /api/scholarship/inquiry/:id/status')
-    console.log('   DELETE /api/scholarship/inquiry/:id')
-    console.log('   POST   /api/admin/scholarships')
-    console.log('   PUT    /api/admin/scholarships/:id')
-    console.log('   DELETE /api/admin/scholarships/:id')
-    console.log('   PATCH  /api/admin/scholarships/:id/feature')
-    console.log('   PATCH  /api/admin/scholarships/:id/status')
-    console.log('   GET    /api/scholarship/admin/stats')
     console.log('\n' + '='.repeat(50))
     console.log('✅ Ready to accept requests!\n')
 })
